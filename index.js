@@ -1,14 +1,11 @@
-const fs = require('fs').promises;
-const { HttpsProxyAgent } = require('https-proxy-agent');
-const readline = require('readline');
+import { promises as fs } from 'fs';
+import { HttpsProxyAgent } from 'https-proxy-agent';
+import readline from 'readline';
+import fetch from 'node-fetch';
+import chalk from 'chalk';
 
 const apiBaseUrl = "https://gateway-run.bls.dev/api/v1";
 const ipServiceUrl = "https://tight-block-2413.txlabs.workers.dev";
-
-async function loadFetch() {
-    const fetch = await import('node-fetch').then(module => module.default);
-    return fetch;
-}
 
 async function readProxies() {
     const data = await fs.readFile('proxy.txt', 'utf-8');
@@ -44,7 +41,7 @@ async function promptUseProxy() {
     });
 }
 
-async function fetchIpAddress(fetch, agent) {
+async function fetchIpAddress(agent) {
     const response = await fetch(ipServiceUrl, { agent });
     const data = await response.json();
     console.log(`[${new Date().toISOString()}] IP 获取响应:`, data);
@@ -52,7 +49,6 @@ async function fetchIpAddress(fetch, agent) {
 }
 
 async function registerNode(nodeId, hardwareId, ipAddress, proxy) {
-    const fetch = await loadFetch();
     const authToken = await readAuthToken();
     let agent;
 
@@ -89,7 +85,6 @@ async function registerNode(nodeId, hardwareId, ipAddress, proxy) {
 }
 
 async function startSession(nodeId, proxy) {
-    const fetch = await loadFetch();
     const authToken = await readAuthToken();
     let agent;
 
@@ -112,8 +107,6 @@ async function startSession(nodeId, proxy) {
 }
 
 async function pingNode(nodeId, proxy, ipAddress) {
-    const fetch = await loadFetch();
-    const chalk = await import('chalk');
     const authToken = await readAuthToken();
     let agent;
 
@@ -133,7 +126,7 @@ async function pingNode(nodeId, proxy, ipAddress) {
     const data = await response.json();
     
     const lastPing = data.pings[data.pings.length - 1].timestamp;
-    const logMessage = `[${new Date().toISOString()}] Ping响应, ID: ${chalk.default.green(data._id)}, 节点ID: ${chalk.default.green(data.nodeId)}, 最后Ping时间: ${chalk.default.yellow(lastPing)}, 代理: ${proxy}, IP: ${ipAddress}`;
+    const logMessage = `[${new Date().toISOString()}] Ping响应, ID: ${chalk.green(data._id)}, 节点ID: ${chalk.green(data.nodeId)}, 最后Ping时间: ${chalk.yellow(lastPing)}, 代理: ${proxy}, IP: ${ipAddress}`;
     console.log(logMessage);
     
     return data;
@@ -147,13 +140,13 @@ async function runAll() {
         const proxies = await readProxies();
 
         if (useProxy && proxies.length !== ids.length) {
-            throw new Error((await import('chalk')).default.yellow(`代理数量 (${proxies.length}) 与节点ID:硬件ID对数量不匹配 (${ids.length})`));
+            throw new Error(chalk.yellow(`代理数量 (${proxies.length}) 与节点ID:硬件ID对数量不匹配 (${ids.length})`));
         }
 
         for (let i = 0; i < ids.length; i++) {
             const { nodeId, hardwareId } = ids[i];
             const proxy = useProxy ? proxies[i] : null;
-            const ipAddress = useProxy ? await fetchIpAddress(await loadFetch(), proxy ? new HttpsProxyAgent(proxy) : null) : null;
+            const ipAddress = useProxy ? await fetchIpAddress(proxy ? new HttpsProxyAgent(proxy) : null) : null;
 
             console.log(`[${new Date().toISOString()}] 正在处理节点ID: ${nodeId}, 硬件ID: ${hardwareId}, IP: ${ipAddress}`);
 
@@ -173,8 +166,7 @@ async function runAll() {
         }
 
     } catch (error) {
-        const chalk = await import('chalk');
-        console.error(chalk.default.yellow(`[${new Date().toISOString()}] 发生错误: ${error.message}`));
+        console.error(chalk.yellow(`[${new Date().toISOString()}] 发生错误: ${error.message}`));
     }
 }
 

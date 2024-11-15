@@ -1,5 +1,6 @@
 import { promises as fs } from 'fs';
-import { HttpsProxyAgent } from 'https-proxy-agent';
+import pkg from 'https-proxy-agent';
+const { HttpsProxyAgent } = pkg;
 import readline from 'readline';
 import fetch from 'node-fetch';
 import chalk from 'chalk';

@@ -1,6 +1,7 @@
-const crypto = require('crypto');
-const fs = require('fs');
-const readline = require('readline');
+import crypto from 'crypto';
+import fs from 'fs';
+import readline from 'readline';
+import chalk from 'chalk';
 
 function getRandomHardwareIdentifier() {
     const randomCpuArchitecture = Math.random() > 0.5 ? 'x64' : 'x86';
@@ -46,8 +47,6 @@ const rl = readline.createInterface({
 });
 
 async function main() {
-    const chalk = (await import('chalk')).default;
-
     console.log(chalk.red.bold('此工具仅供测试使用，不建议实际应用'));
 
     rl.question(chalk.cyan('请输入要生成的标识符数量: '), async (answer) => {

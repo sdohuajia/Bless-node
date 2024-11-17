@@ -1,31 +1,15 @@
-import { promises as fs } from 'fs';
-import pkg from 'https-proxy-agent';
-const { HttpsProxyAgent } = pkg;
-import readline from 'readline';
-import fetch from 'node-fetch';
-import chalk from 'chalk';
+const fs = require('fs').promises;
+const { HttpsProxyAgent } = require('https-proxy-agent');
+const readline = require('readline');
+const config = require('./config');
 
 const apiBaseUrl = "https://gateway-run.bls.dev/api/v1";
 const ipServiceUrl = "https://tight-block-2413.txlabs.workers.dev";
+let useProxy;
 
-async function readProxies() {
-    const data = await fs.readFile('proxy.txt', 'utf-8');
-    const proxies = data.trim().split('\n').filter(proxy => proxy);
-    return proxies;
-}
-
-async function readNodeAndHardwareIds() {
-    const data = await fs.readFile('id.txt', 'utf-8');
-    const ids = data.trim().split('\n').filter(id => id).map(id => {
-        const [nodeId, hardwareId] = id.split(':');
-        return { nodeId, hardwareId };
-    });
-    return ids;
-}
-
-async function readAuthToken() {
-    const data = await fs.readFile('user.txt', 'utf-8');
-    return data.trim();
+async function loadFetch() {
+    const fetch = await import('node-fetch').then(module => module.default);
+    return fetch;
 }
 
 async function promptUseProxy() {
@@ -35,22 +19,22 @@ async function promptUseProxy() {
     });
 
     return new Promise(resolve => {
-        rl.question('是否使用代理？(y/n): ', answer => {
+        rl.question('是否使用代理? (y/n): ', answer => {
             rl.close();
             resolve(answer.toLowerCase() === 'y');
         });
     });
 }
 
-async function fetchIpAddress(agent) {
+async function fetchIpAddress(fetch, agent) {
     const response = await fetch(ipServiceUrl, { agent });
     const data = await response.json();
     console.log(`[${new Date().toISOString()}] IP 获取响应:`, data);
     return data.ip;
 }
 
-async function registerNode(nodeId, hardwareId, ipAddress, proxy) {
-    const authToken = await readAuthToken();
+async function registerNode(nodeId, hardwareId, ipAddress, proxy, authToken) {
+    const fetch = await loadFetch();
     let agent;
 
     if (proxy) {
@@ -77,7 +61,7 @@ async function registerNode(nodeId, hardwareId, ipAddress, proxy) {
         data = await response.json();
     } catch (error) {
         const text = await response.text();
-        console.error(`[${new Date().toISOString()}] JSON解析失败。响应内容:`, text);
+        console.error(`[${new Date().toISOString()}] JSON解析失败。响应文本:`, text);
         throw error;
     }
 
@@ -85,8 +69,8 @@ async function registerNode(nodeId, hardwareId, ipAddress, proxy) {
     return data;
 }
 
-async function startSession(nodeId, proxy) {
-    const authToken = await readAuthToken();
+async function startSession(nodeId, proxy, authToken) {
+    const fetch = await loadFetch();
     let agent;
 
     if (proxy) {
@@ -107,8 +91,9 @@ async function startSession(nodeId, proxy) {
     return data;
 }
 
-async function pingNode(nodeId, proxy, ipAddress) {
-    const authToken = await readAuthToken();
+async function pingNode(nodeId, proxy, ipAddress, authToken) {
+    const fetch = await loadFetch();
+    const chalk = await import('chalk');
     let agent;
 
     if (proxy) {
@@ -116,7 +101,7 @@ async function pingNode(nodeId, proxy, ipAddress) {
     }
 
     const pingUrl = `${apiBaseUrl}/nodes/${nodeId}/ping`;
-    console.log(`[${new Date().toISOString()}] 正在对节点 ${nodeId} 进行ping操作，使用代理 ${proxy}`);
+    console.log(`[${new Date().toISOString()}] 正在 ping 节点 ${nodeId}，使用代理 ${proxy}`);
     const response = await fetch(pingUrl, {
         method: "POST",
         headers: {
@@ -125,50 +110,70 @@ async function pingNode(nodeId, proxy, ipAddress) {
         agent
     });
     const data = await response.json();
-    
-    const lastPing = data.pings[data.pings.length - 1].timestamp;
-    const logMessage = `[${new Date().toISOString()}] Ping响应, ID: ${chalk.green(data._id)}, 节点ID: ${chalk.green(data.nodeId)}, 最后Ping时间: ${chalk.yellow(lastPing)}, 代理: ${proxy}, IP: ${ipAddress}`;
+
+    let statusColor = data.status.toLowerCase() === 'ok' ? chalk.default.green : chalk.default.red;
+    const logMessage = `[${new Date().toISOString()}] Ping 响应状态: ${statusColor(data.status.toUpperCase())}, 节点ID: ${chalk.default.cyan(nodeId)}, 代理: ${chalk.default.yellow(proxy)}, IP: ${chalk.default.yellow(ipAddress)}`;
     console.log(logMessage);
     
     return data;
 }
 
-async function runAll() {
-    try {
-        const useProxy = await promptUseProxy();
-
-        const ids = await readNodeAndHardwareIds();
-        const proxies = await readProxies();
-
-        if (useProxy && proxies.length !== ids.length) {
-            throw new Error(chalk.yellow(`代理数量 (${proxies.length}) 与节点ID:硬件ID对数量不匹配 (${ids.length})`));
-        }
-
-        for (let i = 0; i < ids.length; i++) {
-            const { nodeId, hardwareId } = ids[i];
-            const proxy = useProxy ? proxies[i] : null;
-            const ipAddress = useProxy ? await fetchIpAddress(proxy ? new HttpsProxyAgent(proxy) : null) : null;
-
-            console.log(`[${new Date().toISOString()}] 正在处理节点ID: ${nodeId}, 硬件ID: ${hardwareId}, IP: ${ipAddress}`);
-
-            const registrationResponse = await registerNode(nodeId, hardwareId, ipAddress, proxy);
-            console.log(`[${new Date().toISOString()}] 节点注册完成，节点ID: ${nodeId}. 响应:`, registrationResponse);
-
-            const startSessionResponse = await startSession(nodeId, proxy);
-            console.log(`[${new Date().toISOString()}] 会话已启动，节点ID: ${nodeId}. 响应:`, startSessionResponse);
-
-            console.log(`[${new Date().toISOString()}] 正在发送初始ping，节点ID: ${nodeId}`);
-            const initialPingResponse = await pingNode(nodeId, proxy, ipAddress);
+async function processNode(node, proxy, ipAddress, authToken) {
+    while (true) {
+        try {
+            console.log(`[${new Date().toISOString()}] 正在处理节点ID: ${node.nodeId}, 硬件ID: ${node.hardwareId}, IP: ${ipAddress}`);
+            
+            const registrationResponse = await registerNode(node.nodeId, node.hardwareId, ipAddress, proxy, authToken);
+            console.log(`[${new Date().toISOString()}] 节点注册完成，节点ID: ${node.nodeId}. 响应:`, registrationResponse);
+            
+            const startSessionResponse = await startSession(node.nodeId, proxy, authToken);
+            console.log(`[${new Date().toISOString()}] 会话已启动，节点ID: ${node.nodeId}. 响应:`, startSessionResponse);
+            
+            console.log(`[${new Date().toISOString()}] 正在发送初始 ping，节点ID: ${node.nodeId}`);
+            await pingNode(node.nodeId, proxy, ipAddress, authToken);
 
             setInterval(async () => {
-                console.log(`[${new Date().toISOString()}] 正在发送ping，节点ID: ${nodeId}`);
-                const pingResponse = await pingNode(nodeId, proxy, ipAddress);
-            }, 10000);
-        }
+                try {
+                    console.log(`[${new Date().toISOString()}] 正在发送 ping，节点ID: ${node.nodeId}`);
+                    await pingNode(node.nodeId, proxy, ipAddress, authToken);
+                } catch (error) {
+                    console.error(`[${new Date().toISOString()}] Ping 过程中出错: ${error.message}`);
+                    throw error;
+                }
+            }, 60000);
 
-    } catch (error) {
-        console.error(chalk.yellow(`[${new Date().toISOString()}] 发生错误: ${error.message}`));
+            break;
+
+        } catch (error) {
+            console.error(`[${new Date().toISOString()}] 节点ID: ${node.nodeId} 出现错误，50秒后重启进程: ${error.message}`);
+            await new Promise(resolve => setTimeout(resolve, 50000));
+        }
     }
 }
+
+async function runAll(initialRun = true) {
+    try {
+        if (initialRun) {
+            useProxy = await promptUseProxy();
+        }
+
+        for (const user of config) {
+            for (const node of user.nodes) {
+                const proxy = useProxy ? node.proxy : null;
+                const ipAddress = useProxy ? await fetchIpAddress(await loadFetch(), proxy ? new HttpsProxyAgent(proxy) : null) : null;
+
+                processNode(node, proxy, ipAddress, user.usertoken);
+            }
+        }
+    } catch (error) {
+        const chalk = await import('chalk');
+        console.error(chalk.default.yellow(`[${new Date().toISOString()}] 发生错误: ${error.message}`));
+    }
+}
+
+process.on('uncaughtException', (error) => {
+    console.error(`[${new Date().toISOString()}] 未捕获的异常: ${error.message}`);
+    runAll(false);
+});
 
 runAll();

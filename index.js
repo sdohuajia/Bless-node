@@ -1,172 +1,207 @@
-import { createRequire } from 'module';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
-import readline from 'readline';
-import chalk from 'chalk';
-import fetch from 'node-fetch';
-import { HttpsProxyAgent } from 'https-proxy-agent';
-
-const require = createRequire(import.meta.url);
+const fs = require('fs').promises;
+const { HttpsProxyAgent } = require('https-proxy-agent');
+const chalk = require('chalk');
+const readline = require('readline');
 const config = require('./config');
 
+// API 基础 URL 和 IP 服务地址
 const apiBaseUrl = "https://gateway-run.bls.dev/api/v1";
-const ipServiceUrl = "https://tight-block-2413.txlabs.workers.dev";
+const ipServiceUrls = [
+    "https://tight-block-2413.txlabs.workers.dev", 
+    "https://api64.ipify.org?format=json"        
+];
 let useProxy;
 
+// 颜色和日志工具
+const colors = {
+    header: chalk.hex('#FFD700'),
+    info: chalk.hex('#87CEEB'),
+    success: chalk.hex('#32CD32'),
+    error: chalk.hex('#FF6347'),
+    timestamp: chalk.hex('#4682B4'),
+    id: chalk.hex('#FF69B4'),
+    ip: chalk.hex('#9370DB'),
+};
+
+function logTimestamped(message, style = colors.info) {
+    console.log(`${colors.timestamp(`[${new Date().toISOString()}]`)} ${style(message)}`);
+}
+
+// 提示用户是否使用代理
 async function promptUseProxy() {
     const rl = readline.createInterface({
         input: process.stdin,
-        output: process.stdout
+        output: process.stdout,
     });
 
     return new Promise(resolve => {
-        rl.question('是否使用代理？(y/n): ', answer => {
+        rl.question('是否使用代理？（y/n）：', answer => {
             rl.close();
-            resolve(answer.toLowerCase() === 'y');
+            resolve(answer.trim().toLowerCase() === 'y');
         });
     });
 }
 
-async function fetchIpAddress(agent) {
-    const response = await fetch(ipServiceUrl, { agent });
-    const data = await response.json();
-    console.log(`[${new Date().toISOString()}] IP 获取响应:`, data);
-    return data.ip;
+// 加载 fetch 模块
+async function loadFetch() {
+    const fetch = await import('node-fetch').then(module => module.default);
+    return fetch;
 }
 
-async function registerNode(nodeId, hardwareId, ipAddress, proxy, authToken) {
-    let agent;
-    if (proxy) {
-        agent = new HttpsProxyAgent(proxy);
+// 获取 IP 地址（带备用服务）
+async function fetchIpAddressWithFallback(fetch, agent) {
+    for (const url of ipServiceUrls) {
+        try {
+            const response = await fetch(url, { agent });
+            const data = await response.json();
+            logTimestamped(`获取到 IP 地址: ${colors.ip(data.ip)} 来自 ${url}`, colors.success);
+            return data.ip;
+        } catch (error) {
+            logTimestamped(`从服务 ${url} 获取 IP 失败: ${error.message}`, colors.error);
+        }
     }
+    throw new Error("所有 IP 服务都不可用");
+}
 
+// 注册节点
+async function registerNode(nodeId, hardwareId, ipAddress, proxy, authToken) {
+    const fetch = await loadFetch();
+    const agent = proxy ? new HttpsProxyAgent(proxy) : null;
     const registerUrl = `${apiBaseUrl}/nodes/${nodeId}`;
-    console.log(`[${new Date().toISOString()}] 正在注册节点，IP: ${ipAddress}, 硬件ID: ${hardwareId}`);
-    const response = await fetch(registerUrl, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${authToken}`
-        },
-        body: JSON.stringify({
-            ipAddress,
-            hardwareId
-        }),
-        agent
-    });
 
-    let data;
+    logTimestamped(`注册节点: ${colors.id(nodeId)}，IP: ${colors.ip(ipAddress)}，硬件 ID: ${hardwareId}`, colors.info);
     try {
-        data = await response.json();
+        const response = await fetch(registerUrl, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${authToken}`,
+            },
+            body: JSON.stringify({ ipAddress, hardwareId }),
+            agent,
+        });
+        const data = await response.json();
+        logTimestamped(`节点注册成功: ${JSON.stringify(data, null, 2)}`, colors.success);
+        return data;
     } catch (error) {
-        const text = await response.text();
-        console.error(`[${new Date().toISOString()}] JSON解析失败。响应文本:`, text);
+        logTimestamped(`节点注册失败: ${error.message}`, colors.error);
         throw error;
     }
-
-    console.log(`[${new Date().toISOString()}] 注册响应:`, data);
-    return data;
 }
 
+// 启动会话
 async function startSession(nodeId, proxy, authToken) {
-    let agent;
-    if (proxy) {
-        agent = new HttpsProxyAgent(proxy);
-    }
+    const fetch = await loadFetch();
+    const agent = proxy ? new HttpsProxyAgent(proxy) : null;
+    const sessionUrl = `${apiBaseUrl}/nodes/${nodeId}/start-session`;
 
-    const startSessionUrl = `${apiBaseUrl}/nodes/${nodeId}/start-session`;
-    console.log(`[${new Date().toISOString()}] 正在启动节点 ${nodeId} 的会话，可能需要一段时间...`);
-    const response = await fetch(startSessionUrl, {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${authToken}`
-        },
-        agent
-    });
-    const data = await response.json();
-    console.log(`[${new Date().toISOString()}] 会话启动响应:`, data);
-    return data;
+    logTimestamped(`启动会话: ${colors.id(nodeId)}`, colors.info);
+    try {
+        const response = await fetch(sessionUrl, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${authToken}`,
+            },
+            agent,
+        });
+        const data = await response.json();
+        logTimestamped(`会话启动成功: ${JSON.stringify(data, null, 2)}`, colors.success);
+        return data;
+    } catch (error) {
+        logTimestamped(`启动会话失败: ${error.message}`, colors.error);
+        throw error;
+    }
 }
 
+// Ping 节点
 async function pingNode(nodeId, proxy, ipAddress, authToken) {
-    let agent;
-    if (proxy) {
-        agent = new HttpsProxyAgent(proxy);
-    }
-
+    const fetch = await loadFetch();
+    const agent = proxy ? new HttpsProxyAgent(proxy) : null;
     const pingUrl = `${apiBaseUrl}/nodes/${nodeId}/ping`;
-    console.log(`[${new Date().toISOString()}] 正在ping节点 ${nodeId}，使用代理 ${proxy}`);
-    const response = await fetch(pingUrl, {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${authToken}`
-        },
-        agent
-    });
-    const data = await response.json();
 
-    let statusColor = data.status.toLowerCase() === 'ok' ? chalk.green : chalk.red;
-    const logMessage = `[${new Date().toISOString()}] Ping响应状态: ${statusColor(data.status.toUpperCase())}, 节点ID: ${chalk.cyan(nodeId)}, 代理: ${chalk.yellow(proxy)}, IP: ${chalk.yellow(ipAddress)}`;
-    console.log(logMessage);
-    
-    return data;
+    logTimestamped(`Ping 节点: ${colors.id(nodeId)}`, colors.info);
+    try {
+        const response = await fetch(pingUrl, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${authToken}`,
+            },
+            agent,
+        });
+        const data = await response.json();
+        logTimestamped(`Ping 成功: ${JSON.stringify(data, null, 2)}`, colors.success);
+        return data;
+    } catch (error) {
+        logTimestamped(`Ping 失败: ${error.message}`, colors.error);
+        throw error;
+    }
 }
 
+// 递归 Ping 节点
+async function keepPinging(nodeId, proxy, ipAddress, authToken) {
+    try {
+        await pingNode(nodeId, proxy, ipAddress, authToken);
+    } catch (error) {
+        logTimestamped(`Ping 失败: ${error.message}`, colors.error);
+    } finally {
+        setTimeout(() => keepPinging(nodeId, proxy, ipAddress, authToken), 60000);
+    }
+}
+
+// 无限循环处理节点
 async function processNode(node, proxy, ipAddress, authToken) {
     while (true) {
         try {
-            console.log(`[${new Date().toISOString()}] 正在处理节点ID: ${node.nodeId}, 硬件ID: ${node.hardwareId}, IP: ${ipAddress}`);
-            
+            logTimestamped(`处理节点: ${colors.id(node.nodeId)}，硬件 ID: ${node.hardwareId}，IP: ${ipAddress}`, colors.info);
+
             const registrationResponse = await registerNode(node.nodeId, node.hardwareId, ipAddress, proxy, authToken);
-            console.log(`[${new Date().toISOString()}] 节点注册完成，节点ID: ${node.nodeId}. 响应:`, registrationResponse);
-            
+            logTimestamped(`节点注册完成: ${JSON.stringify(registrationResponse, null, 2)}`, colors.success);
+
             const startSessionResponse = await startSession(node.nodeId, proxy, authToken);
-            console.log(`[${new Date().toISOString()}] 会话已启动，节点ID: ${node.nodeId}. 响应:`, startSessionResponse);
+            logTimestamped(`会话启动完成: ${JSON.stringify(startSessionResponse, null, 2)}`, colors.success);
+
             
-            console.log(`[${new Date().toISOString()}] 发送初始ping，节点ID: ${node.nodeId}`);
-            await pingNode(node.nodeId, proxy, ipAddress, authToken);
+            keepPinging(node.nodeId, proxy, ipAddress, authToken);
 
-            setInterval(async () => {
-                try {
-                    console.log(`[${new Date().toISOString()}] 发送ping，节点ID: ${node.nodeId}`);
-                    await pingNode(node.nodeId, proxy, ipAddress, authToken);
-                } catch (error) {
-                    console.error(`[${new Date().toISOString()}] Ping过程中出错: ${error.message}`);
-                    throw error;
-                }
-            }, 60000);
-
-            break;
-
+            break; 
         } catch (error) {
-            console.error(`[${new Date().toISOString()}] 节点ID: ${node.nodeId} 出错，50秒后重启进程: ${error.message}`);
-            await new Promise(resolve => setTimeout(resolve, 50000));
+            logTimestamped(`节点 ${node.nodeId} 处理失败，重试中: ${error.message}`, colors.error);
+            await new Promise(res => setTimeout(res, 5000)); 
         }
     }
 }
+
 
 async function runAll(initialRun = true) {
     try {
         if (initialRun) {
             useProxy = await promptUseProxy();
+            logTimestamped(`使用代理: ${useProxy ? '是' : '否'}`, colors.info);
         }
 
         for (const user of config) {
             for (const node of user.nodes) {
-                const proxy = useProxy ? node.proxy : null;
-                const ipAddress = useProxy ? await fetchIpAddress(proxy ? new HttpsProxyAgent(proxy) : null) : null;
+                try {
+                    const proxy = useProxy ? node.proxy : null;
+                    const ipAddress = useProxy
+                        ? await fetchIpAddressWithFallback(await loadFetch(), proxy ? new HttpsProxyAgent(proxy) : null)
+                        : null;
 
-                processNode(node, proxy, ipAddress, user.usertoken);
+                    await processNode(node, proxy, ipAddress, user.usertoken);
+                } catch (error) {
+                    logTimestamped(`节点 ${node.nodeId} 处理失败，跳过: ${error.message}`, colors.error);
+                }
             }
         }
     } catch (error) {
-        console.error(chalk.yellow(`[${new Date().toISOString()}] 发生错误: ${error.message}`));
+        logTimestamped(`运行失败: ${error.message}`, colors.error);
     }
 }
 
+
 process.on('uncaughtException', (error) => {
-    console.error(`[${new Date().toISOString()}] 未捕获的异常: ${error.message}`);
-    runAll(false);
+    logTimestamped(`未捕获的异常: ${error.message}`, colors.error);
+    setTimeout(() => runAll(false), 5000); // 等待 5 秒后重启
 });
 
 runAll();

@@ -1,1 +1,0 @@
-nodeid(pubkey):hardwareid

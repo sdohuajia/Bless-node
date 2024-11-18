@@ -13,7 +13,7 @@ function generatePubKey(length = 52) {
     ).join('');
 }
 
-// 随机生成 Mac 设备标识符
+// 随机生成 设备标识符
 function generateMacDeviceInfo() {
     const macModels = ['MacBookPro15,1', 'MacBookAir10,1', 'MacMini9,1', 'iMac20,1', 'MacPro7,1'];
     const macOSVersions = ['macOS 12.6 Monterey', 'macOS 13.0 Ventura', 'macOS 11.7 Big Sur'];

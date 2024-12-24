@@ -892,6 +892,11 @@ async function runAll(initialRun = true) {
     }
 }
 
+function displayHeader() {
+    console.log(colors.header('        Blockless Bless 网络机器人     '));
+    console.log();
+}
+
 process.on('uncaughtException', (error) => {
     logStyled(`未捕获的异常: ${error.message}`, colors.error, '', ' ❌');
     setTimeout(() => runAll(false), 5000);

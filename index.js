@@ -1,42 +1,57 @@
-const fs = require('fs').promises;
-const path = require('path');
+const readline = require('readline');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const { SocksProxyAgent } = require('socks-proxy-agent');
-const readline = require('readline');
+const fs = require('fs').promises;
+const path = require('path');
 const config = require('./config');
 
 const apiBaseUrl = "https://gateway-run.bls.dev/api/v1";
-let useProxy;
-const MAX_PING_ERRORS = 3; // 最大ping错误次数
-const pingInterval = 120000; // ping的时间间隔（毫秒）
-const restartDelay = 240000; // 重启延迟（毫秒）
-const processRestartDelay = 150000; // 进程重启延迟（毫秒）
-const retryDelay = 150000; // 重试延迟（毫秒）
-const hardwareInfoFile = path.join(__dirname, 'hardwareInfo.json'); // 硬件信息文件路径
+let connectionOption;
+const MAX_PING_ERRORS = 3;
+const pingInterval = 120000;
+const restartDelay = 240000;
+const processRestartDelay = 150000;
+const retryDelay = 150000;
+const hardwareInfoFile = path.join(__dirname, 'hardwareInfo.json');
 
 async function loadFetch() {
     const fetch = await import('node-fetch').then(module => module.default);
     return fetch;
 }
 
-async function promptUseProxy() {
+function getFormattedTime() {
+    const now = new Date();
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    const seconds = String(now.getSeconds()).padStart(2, '0');
+    return `[${hours}:${minutes}:${seconds}]`;
+}
+
+async function promptConnectionOption() {
     const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout
     });
 
     return new Promise(resolve => {
-        rl.question('你想使用代理吗？(y/n): ', answer => {
+        // ANSI escape code for red text: \x1b[31m
+        // ANSI escape code to reset color: \x1b[0m
+        const redText = '\x1b[31m3. 虚假IP（不要使用）\x1b[0m';
+        rl.question(`连接选项:\n1. 使用代理\n2. 不使用代理\n${redText}\n请选择一个选项 (1/2/3): `, answer => {
             rl.close();
-            resolve(answer.toLowerCase() === 'y');
+            resolve(parseInt(answer, 10));
         });
     });
+}
+
+function generateFakeIpAddress() {
+    return `192.168.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}`;
 }
 
 const commonHeaders = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "zh-CN,zh;q=0.5" // 更改为中文
+    "Accept-Language": "zh-CN,zh;q=0.5"
 };
 
 async function fetchIpAddress(fetch, agent = null) {
@@ -46,39 +61,39 @@ async function fetchIpAddress(fetch, agent = null) {
     try {
         const response = await fetch(primaryUrl, { agent, headers: commonHeaders });
         const data = await response.json();
-        console.log(`[${new Date().toISOString()}] 从主URL获取IP地址响应:`, data);
+        console.log(`[${getFormattedTime()}] 从主URL获取IP响应:`, data);
         return data.ip;
     } catch (error) {
-        console.error(`[${new Date().toISOString()}] 从主URL获取IP地址失败，错误: ${error.message}`);
+        console.error(`[${getFormattedTime()}] 从主URL获取IP失败，错误信息: ${error.message}`);
     }
 
     try {
         const response = await fetch(fallbackUrl, { agent, headers: commonHeaders });
         const data = await response.json();
-        console.log(`[${new Date().toISOString()}] 从备用URL获取IP地址响应:`, data);
+        console.log(`[${getFormattedTime()}] 从备用URL获取IP响应:`, data);
         return data.ip;
     } catch (fallbackError) {
-        console.error(`[${new Date().toISOString()}] 从备用URL获取IP地址失败，错误: ${fallbackError.message}`);
+        console.error(`[${getFormattedTime()}] 从备用URL获取IP失败，错误信息: ${fallbackError.message}`);
     }
 
-    console.log(`[${new Date().toISOString()}] 正在重试不使用头部信息...`);
+    console.log(`[${getFormattedTime()}] 重试，不带头信息...`);
 
     try {
         const response = await fetch(primaryUrl, { agent });
         const data = await response.json();
-        console.log(`[${new Date().toISOString()}] 从主URL获取IP地址响应:`, data);
+        console.log(`[${getFormattedTime()}] 从主URL获取IP响应（不带头信息）:`, data);
         return data.ip;
     } catch (error) {
-        console.error(`[${new Date().toISOString()}] 从主URL获取IP地址失败，错误: ${error.message}`);
+        console.error(`[${getFormattedTime()}] 从主URL获取IP失败（不带头信息），错误信息: ${error.message}`);
     }
 
     try {
         const response = await fetch(fallbackUrl, { agent });
         const data = await response.json();
-        console.log(`[${new Date().toISOString()}] 从备用URL获取IP地址响应:`, data);
+        console.log(`[${getFormattedTime()}] 从备用URL获取IP响应（不带头信息）:`, data);
         return data.ip;
     } catch (fallbackError) {
-        console.error(`[${new Date().toISOString()}] 从备用URL获取IP地址失败，错误: ${fallbackError.message}`);
+        console.error(`[${getFormattedTime()}] 从备用URL获取IP失败（不带头信息），错误信息: ${fallbackError.message}`);
         return null;
     }
 }
@@ -662,7 +677,7 @@ async function saveHardwareInfo(hardwareInfo) {
 async function registerNode(nodeId, hardwareId, ipAddress, agent, authToken) {
     const fetch = await loadFetch();
     const registerUrl = `${apiBaseUrl}/nodes/${nodeId}`;
-    console.log(`[${new Date().toISOString()}] 正在注册节点，IP: ${ipAddress}, 硬件ID: ${hardwareId}`);
+    console.log(`[${getFormattedTime()}] 正在注册节点，IP: ${ipAddress}, 硬件ID: ${hardwareId}`);
 
     let hardwareInfo = await loadHardwareInfo();
     if (!hardwareInfo[nodeId]) {
@@ -688,11 +703,11 @@ async function registerNode(nodeId, hardwareId, ipAddress, agent, authToken) {
 
     try {
         const data = await response.json();
-        console.log(`[${new Date().toISOString()}] 注册响应:`, data);
+        console.log(`[${getFormattedTime()}] 注册响应:`, data);
         return data;
     } catch (error) {
         const text = await response.text();
-        console.error(`[${new Date().toISOString()}] 解析JSON失败。响应文本:`, text);
+        console.error(`[${getFormattedTime()}] 无法解析JSON，响应文本:`, text);
         throw new Error(`无效的JSON响应: ${text}`);
     }
 }
@@ -700,7 +715,7 @@ async function registerNode(nodeId, hardwareId, ipAddress, agent, authToken) {
 async function startSession(nodeId, agent, authToken) {
     const fetch = await loadFetch();
     const startSessionUrl = `${apiBaseUrl}/nodes/${nodeId}/start-session`;
-    console.log(`[${new Date().toISOString()}] 正在为节点 ${nodeId} 启动会话，请稍候...`);
+    console.log(`[${getFormattedTime()}] 正在为节点 ${nodeId} 启动会话，这可能需要一些时间...`);
     const response = await fetch(startSessionUrl, {
         method: "POST",
         headers: {
@@ -712,12 +727,41 @@ async function startSession(nodeId, agent, authToken) {
 
     try {
         const data = await response.json();
-        console.log(`[${new Date().toISOString()}] 启动会话响应:`, data);
+        console.log(`[${getFormattedTime()}] 启动会话响应:`, data);
         return data;
     } catch (error) {
         const text = await response.text();
-        console.error(`[${new Date().toISOString()}] 解析JSON失败。响应文本:`, text);
+        console.error(`[${getFormattedTime()}] 无法解析JSON，响应文本:`, text);
         throw new Error(`无效的JSON响应: ${text}`);
+    }
+}
+
+async function checkNodeStatus(nodeId, fetch, agent = null) {
+    const nodeStatusUrl = `${apiBaseUrl}/nodes/${nodeId}`;
+    try {
+        const response = await fetch(nodeStatusUrl, { agent, headers: commonHeaders });
+        if (response.ok) {
+            console.log(`[${getFormattedTime()}] 节点 ${nodeId} 状态: 正常`);
+        } else {
+            // console.error(`[${getFormattedTime()}] 节点 ${nodeId} 状态检查失败，状态: ${response.status}`);
+        }
+    } catch (error) {
+        // console.error(`[${getFormattedTime()}] 检查节点状态时发生错误，节点 ${nodeId}: ${error.message}`);
+    }
+}
+
+async function checkServiceHealth(fetch, agent = null) {
+    const healthUrl = "https://gateway-run.bls.dev/health";
+    try {
+        const response = await fetch(healthUrl, { agent, headers: commonHeaders });
+        const data = await response.json();
+        if (data.status === "ok") {
+            console.log(`[${getFormattedTime()}] 服务健康检查: 正常`);
+        } else {
+            console.error(`[${getFormattedTime()}] 服务健康检查失败:`, data);
+        }
+    } catch (error) {
+        console.error(`[${getFormattedTime()}] 服务健康检查时发生错误: ${error.message}`);
     }
 }
 
@@ -726,9 +770,16 @@ async function pingNode(nodeId, agent, ipAddress, authToken, pingErrorCount) {
     const chalk = await import('chalk');
     const pingUrl = `${apiBaseUrl}/nodes/${nodeId}/ping`;
 
-    const proxyInfo = agent ? JSON.stringify(agent.proxy) : '无代理';
+    await checkServiceHealth(fetch, agent);
 
-    console.log(`[${new Date().toISOString()}] 正在ping节点 ${nodeId}，代理: ${proxyInfo}`);
+    let proxyInfo;
+    if (connectionOption === 3) {
+        proxyInfo = '虚假IP';
+    } else {
+        proxyInfo = agent ? JSON.stringify(agent.proxy) : '无代理';
+    }
+
+    console.log(`[${getFormattedTime()}] 正在为节点 ${nodeId} 发送ping请求，代理: ${proxyInfo}`);
     const response = await fetch(pingUrl, {
         method: "POST",
         headers: {
@@ -742,18 +793,21 @@ async function pingNode(nodeId, agent, ipAddress, authToken, pingErrorCount) {
         const data = await response.json();
         if (!data.status) {
             console.log(
-                `[${new Date().toISOString()}] 第一次ping节点，节点ID: ${chalk.default.cyan(nodeId)}, 代理: ${chalk.default.yellow(proxyInfo)}, IP: ${chalk.default.yellow(ipAddress)}`
+                `[${getFormattedTime()}] ${chalk.default.green('第一次ping请求')}, 节点ID: ${chalk.default.cyan(nodeId)}, 代理: ${chalk.default.yellow(proxyInfo)}, IP: ${chalk.default.yellow(ipAddress)}`
             );
         } else {
             let statusColor = data.status.toLowerCase() === 'ok' ? chalk.default.green : chalk.default.red;
-            const logMessage = `[${new Date().toISOString()}] Ping响应状态: ${statusColor(data.status.toUpperCase())}, 节点ID: ${chalk.default.cyan(nodeId)}, 代理: ${chalk.default.yellow(proxyInfo)}, IP: ${chalk.default.yellow(ipAddress)}`;
+            const logMessage = `[${getFormattedTime()}] Ping响应状态: ${statusColor(data.status.toUpperCase())}, 节点ID: ${chalk.default.cyan(nodeId)}, 代理: ${chalk.default.yellow(proxyInfo)}, IP: ${chalk.default.yellow(ipAddress)}`;
             console.log(logMessage);
         }
         pingErrorCount[nodeId] = 0;
+
+        await checkNodeStatus(nodeId, fetch, agent);
+
         return data;
     } catch (error) {
         const text = await response.text();
-        console.error(`[${new Date().toISOString()}] 解析JSON失败。响应文本:`, text);
+        console.error(`[${getFormattedTime()}] 无法解析JSON，响应文本:`, text);
         pingErrorCount[node.nodeId] = (pingErrorCount[node.nodeId] || 0) + 1;
         throw new Error(`无效的JSON响应: ${text}`);
     }
@@ -764,6 +818,7 @@ async function displayHeader() {
     console.log("");
     console.log(chalk.default.yellow(" ============================================"));
     console.log(chalk.default.yellow("|        Blockless Bless Network Bot         |"));
+    console.log(chalk.default.yellow("|         github.com/recitativonika          |"));
     console.log(chalk.default.yellow(" ============================================"));
     console.log("");
 }
@@ -778,36 +833,36 @@ async function processNode(node, agent, ipAddress, authToken) {
     while (true) {
         try {
             if (activeNodes.has(node.nodeId)) {
-                console.log(`[${new Date().toISOString()}] 节点 ${node.nodeId} 已经在处理中。`);
+                console.log(`[${getFormattedTime()}] 节点 ${node.nodeId} 已经在处理中了。`);
                 return;
             }
 
             activeNodes.add(node.nodeId);
-            console.log(`[${new Date().toISOString()}] 正在处理节点ID: ${node.nodeId}, 硬件ID: ${node.hardwareId}, IP: ${ipAddress}`);
+            console.log(`[${getFormattedTime()}] 正在处理节点ID: ${node.nodeId}, 硬件ID: ${node.hardwareId}, IP: ${ipAddress}`);
 
             const registrationResponse = await registerNode(node.nodeId, node.hardwareId, ipAddress, agent, authToken);
-            console.log(`[${new Date().toISOString()}] 节点注册完成，节点ID: ${node.nodeId}. 响应:`, registrationResponse);
+            console.log(`[${getFormattedTime()}] 节点注册完成，节点ID: ${node.nodeId}. 响应:`, registrationResponse);
 
             const startSessionResponse = await startSession(node.nodeId, agent, authToken);
-            console.log(`[${new Date().toISOString()}] 节点ID: ${node.nodeId} 会话启动完成。响应:`, startSessionResponse);
+            console.log(`[${getFormattedTime()}] 会话启动完成，节点ID: ${node.nodeId}. 响应:`, startSessionResponse);
 
-            console.log(`[${new Date().toISOString()}] 正在发送首次ping请求，节点ID: ${node.nodeId}`);
+            console.log(`[${getFormattedTime()}] 正在为节点ID: ${node.nodeId} 发送初始ping请求`);
             await pingNode(node.nodeId, agent, ipAddress, authToken, pingErrorCount);
 
             if (!nodeIntervals.has(node.nodeId)) {
                 intervalId = setInterval(async () => {
                     try {
-                        console.log(`[${new Date().toISOString()}] 正在发送ping请求，节点ID: ${node.nodeId}`);
+                        console.log(`[${getFormattedTime()}] 正在为节点ID: ${node.nodeId} 发送ping请求`);
                         await pingNode(node.nodeId, agent, ipAddress, authToken, pingErrorCount);
                     } catch (error) {
-                        console.error(`[${new Date().toISOString()}] ping过程中出错: ${error.message}`);
+                        console.error(`[${getFormattedTime()}] ping请求发生错误: ${error.message}`);
 
                         pingErrorCount[node.nodeId] = (pingErrorCount[node.nodeId] || 0) + 1;
                         if (pingErrorCount[node.nodeId] >= MAX_PING_ERRORS) {
                             clearInterval(nodeIntervals.get(node.nodeId));
                             nodeIntervals.delete(node.nodeId);
                             activeNodes.delete(node.nodeId);
-                            console.error(`[${new Date().toISOString()}] 节点ID ${node.nodeId} 连续ping失败${MAX_PING_ERRORS}次。正在重新启动处理...`);
+                            console.error(`[${getFormattedTime()}] 节点ID: ${node.nodeId} 连续ping失败${MAX_PING_ERRORS}次，将重新启动进程...`);
                             await new Promise(resolve => setTimeout(resolve, processRestartDelay));
                             await processNode(node, agent, ipAddress, authToken);
                         }
@@ -820,10 +875,10 @@ async function processNode(node, agent, ipAddress, authToken) {
 
         } catch (error) {
             if (error.message.includes('proxy') || error.message.includes('connect') || error.message.includes('authenticate')) {
-                console.error(`[${new Date().toISOString()}] 代理错误，节点ID: ${node.nodeId}，15分钟后重试: ${error.message}`);
+                console.error(`[${getFormattedTime()}] 节点ID: ${node.nodeId} 的代理错误，15分钟后重试: ${error.message}`);
                 setTimeout(() => processNode(node, agent, ipAddress, authToken), retryDelay);
             } else {
-                console.error(`[${new Date().toISOString()}] 处理节点时发生错误，节点ID: ${node.nodeId}，50秒后重试: ${error.message}`);
+                console.error(`[${getFormattedTime()}] 节点ID: ${node.nodeId} 发生错误，50秒后重新启动进程: ${error.message}`);
                 await new Promise(resolve => setTimeout(resolve, restartDelay));
             }
         } finally {
@@ -836,12 +891,10 @@ async function runAll(initialRun = true) {
     try {
         if (initialRun) {
             await displayHeader();
-            useProxy = await promptUseProxy();
+            connectionOption = await promptConnectionOption();
         }
 
         const fetch = await loadFetch();
-        const publicIpAddress = useProxy ? null : await fetchIpAddress(fetch);
-
         let hardwareInfo = await loadHardwareInfo();
 
         config.forEach(user => {
@@ -857,28 +910,34 @@ async function runAll(initialRun = true) {
         const nodePromises = config.flatMap(user =>
             user.nodes.map(async node => {
                 let agent = null;
-                if (useProxy && node.proxy) {
+                let ipAddress = null;
+
+                if (connectionOption === 1 && node.proxy) {
                     if (node.proxy.startsWith('socks')) {
                         agent = new SocksProxyAgent(node.proxy);
                     } else {
                         const proxyUrl = node.proxy.startsWith('http') ? node.proxy : `http://${node.proxy}`;
                         agent = new HttpsProxyAgent(proxyUrl);
                     }
+                    ipAddress = await fetchIpAddress(fetch, agent);
+                } else if (connectionOption === 3) {
+                    ipAddress = generateFakeIpAddress();
+                } else {
+                    ipAddress = await fetchIpAddress(fetch);
                 }
-                let ipAddress = useProxy ? await fetchIpAddress(fetch, agent) : publicIpAddress;
 
                 if (ipAddress) {
                     await processNode(node, agent, ipAddress, user.usertoken).catch(error => {
-                        console.error(`[${new Date().toISOString()}] 处理节点时出错，节点ID: ${node.nodeId}, 错误: ${error.message}`);
+                        console.error(`[${getFormattedTime()}] 处理节点 ${node.nodeId} 时发生错误: ${error.message}`);
                     });
                 } else {
-                    console.error(`[${new Date().toISOString()}] 跳过节点 ${node.nodeId}，因无法获取IP地址，15分钟后重试。`);
+                    console.error(`[${getFormattedTime()}] 因为获取IP失败，跳过节点 ${node.nodeId}。15分钟后重试.`);
                     setTimeout(async () => {
                         ipAddress = await fetchIpAddress(fetch, agent);
                         if (ipAddress) {
                             await processNode(node, agent, ipAddress, user.usertoken);
                         } else {
-                            console.error(`[${new Date().toISOString()}] 再次获取节点 ${node.nodeId} 的IP地址失败。`);
+                            console.error(`[${getFormattedTime()}] 再次尝试获取节点 ${node.nodeId} 的IP失败。`);
                         }
                     }, retryDelay);
                 }
@@ -888,12 +947,12 @@ async function runAll(initialRun = true) {
         await Promise.allSettled(nodePromises);
     } catch (error) {
         const chalk = await import('chalk');
-        console.error(chalk.default.yellow(`[${new Date().toISOString()}] 发生错误: ${error.message}`));
+        console.error(chalk.default.yellow(`[${getFormattedTime()}] 发生错误: ${error.message}`));
     }
 }
 
 process.on('uncaughtException', (error) => {
-    console.error(`[${new Date().toISOString()}] 未捕获的异常: ${error.message}`);
+    console.error(`[${getFormattedTime()}] 未捕获的异常: ${error.message}`);
     runAll(false);
 });
 

@@ -608,25 +608,25 @@ const rl = readline.createInterface({
 async function main() {
     const chalk = (await import('chalk')).default;
 
-    console.log(chalk.red.bold('This is only for testing purposes, I do not recommend using it'));
+    console.log(chalk.red.bold('仅供测试使用，不建议在生产环境中使用'));
 
-    console.log(chalk.cyan('Pure Random HardwareID'));
+    console.log(chalk.cyan('纯随机硬件ID'));
 
-    rl.question(chalk.cyan('How many hardware identifiers do you want to generate? '), async (answer) => {
+    rl.question(chalk.cyan('你想生成多少个硬件标识符？ '), async (answer) => {
         const total = parseInt(answer);
         let output = '';
 
         for (let i = 0; i < total; i++) {
             const hardwareIdentifier = getRandomHardwareIdentifier();
             const cpuModel = getRandomCpuModel();
-            const logEntry = `Hardware Identifier ${i + 1}: ${chalk.green(hardwareIdentifier)}, CPU Model: ${chalk.blue(cpuModel)}\n`;
+            const logEntry = `硬件标识符 ${i + 1}: ${chalk.green(hardwareIdentifier)}, CPU型号: ${chalk.blue(cpuModel)}\n`;
             const formattedEntry = `${hardwareIdentifier}\n`;
             output += formattedEntry;
             console.log(logEntry);
         }
 
         fs.writeFileSync('output_3.txt', output);
-        console.log(chalk.yellow('Data saved to output_3.txt'));
+        console.log(chalk.yellow('数据已保存到 output_3.txt'));
 
         rl.close();
     });
